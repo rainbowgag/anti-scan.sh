@@ -1,12 +1,7 @@
 #!/bin/bash
 # ==========================================
-# 一键防扫 + VPS 基础防护脚本
+# 一键防扫 + VPS + x-ui/xray 内存优化脚本
 # 兼容 CentOS 7/8 和 Ubuntu 20/22/24
-# 功能：
-# 1. 安装 fail2ban 并启用
-# 2. 清理 SSH 爆破日志
-# 3. 重启系统日志服务释放内存
-# 4. 创建 1G swap（如果没有）
 # ==========================================
 
 echo "=== 0. 检测系统类型 ==="
@@ -17,7 +12,7 @@ if [ -f /etc/redhat-release ]; then
     LOG_SERVICE="rsyslog"
 elif [ -f /etc/lsb-release ] || [ -f /etc/issue ]; then
     OS="ubuntu"
-    PKG_UPDATE="apt update -y && apt upgrade -y"
+    PKG_UPDATE="apt update && apt upgrade -y"
     PKG_INSTALL="apt install -y fail2ban"
     LOG_SERVICE="rsyslog"
 else
@@ -54,8 +49,6 @@ rm -f /var/log/btmp-* 2>/dev/null
 echo "=== 5. 重启系统日志服务释放内存 ==="
 if systemctl is-active --quiet $LOG_SERVICE; then
     systemctl restart $LOG_SERVICE
-else
-    echo "$LOG_SERVICE 未运行，跳过"
 fi
 
 echo "=== 6. 检查 swap，如果没有则创建 1G swap ==="
@@ -66,7 +59,6 @@ if ! swapon --show | grep -q swapfile; then
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
-    # 永久挂载
     if ! grep -q "/swapfile" /etc/fstab; then
         echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
     fi
@@ -75,8 +67,36 @@ else
     echo "swap 已存在，跳过"
 fi
 
-echo "=== 7. 防护完成 ==="
+echo "=== 7. x-ui / xray 内存优化 ==="
+# 限制 x-ui 日志文件
+XUI_LOGS=(/www/x-ui/x-ui.db /www/x-ui/x-ui.log)
+for f in "${XUI_LOGS[@]}"; do
+    if [ -f "$f" ]; then
+        truncate -s 0 "$f"
+    fi
+done
+
+# 限制 xray 日志
+XRAY_LOGS=$(find /etc/xray /usr/local/xray /root/ -type f -name "*.log" 2>/dev/null)
+for f in $XRAY_LOGS; do
+    truncate -s 0 "$f"
+done
+
+echo "=== 8. 清理 Docker 容器日志（如果有 Docker） ==="
+if command -v docker >/dev/null 2>&1; then
+    DOCKER_LOGS=$(find /var/lib/docker/containers/ -type f -name "*-json.log" 2>/dev/null)
+    for f in $DOCKER_LOGS; do
+        truncate -s 0 "$f"
+    done
+fi
+
+echo "=== 9. 完成 ==="
 echo "fail2ban SSH 状态："
-fail2ban-client status sshd
+fail2ban-client status sshd || echo "fail2ban-client 未找到或服务未运行"
 echo "当前内存情况："
 free -h
+
+echo "=== 建议 ==="
+echo "1. 定期更新系统及 x-ui/xray"
+echo "2. 使用 SSH key，禁止密码登录"
+echo "3. 观察 fail2ban 封禁情况：fail2ban-client status sshd"
